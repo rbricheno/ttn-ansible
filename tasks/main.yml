@@ -1,0 +1,150 @@
+---
+
+- name: Install the package "protobuf-compiler" if not present
+  apt: name=protobuf-compiler state=present
+
+- name: Install the package "build-essential" if not present
+  apt: name=build-essential state=present
+
+- name: Install the package "rabbitmq-server" if not present
+  apt: name=rabbitmq-server state=present
+  notify: restart rabbitmq-server
+
+- name: Install the package "redis-server" if not present
+  apt: name=redis-server state=present
+
+- name: Enable RabbitMQ mosquitto plugin
+  command: rabbitmq-plugins enable rabbitmq_mqtt
+
+- name: Enable RabbbitMQ management plugins
+  command: rabbitmq-plugins enable rabbitmq_management
+
+- name: Download rabbitmqadmin script
+  get_url:
+    url: http://localhost:15672/cli/rabbitmqadmin
+    dest: /usr/local/bin/rabbitmqadmin
+    mode: 0755
+
+- name: Create a RabbitMQ exchange for TTN if not present
+  command: rabbitmqadmin declare exchange name=ttn.handler type=topic auto_delete=false durable=true
+
+- name: Create the user 'ttn' with a bash shell (if not present)
+  user: name=ttn shell=/bin/bash append=yes
+
+- name: install "go" via snap
+  command: snap install go --classic
+
+- name: Create go directory for 'ttn' user (for use in $GOPATH)
+  action: file path=/home/ttn/go state=directory owner=ttn group=ttn mode=0775
+
+- name: Create go source directory for 'ttn' user (for use in $GOPATH)
+  action: file path=/home/ttn/go/src state=directory owner=ttn group=ttn mode=0775
+
+- name: Create github vendor directory for 'ttn' user (for use in $GOPATH)
+  action: file path=/home/ttn/go/src/github.com state=directory owner=ttn group=ttn mode=0775
+
+- name: Create rbricheno vendor directory for 'ttn' user (for use in $GOPATH)
+  action: file path=/home/ttn/go/src/github.com/rbricheno state=directory owner=ttn group=ttn mode=0775
+
+- name: Create TheThingsNetwork vendor directory for 'ttn' user (for use in $GOPATH)
+  action: file path=/home/ttn/go/src/github.com/TheThingsNetwork state=directory owner=ttn group=ttn mode=0775
+
+- name: Checkout main ttn source from github
+  git: repo=https://github.com/TheThingsNetwork/ttn.git version=master dest=/home/ttn/go/src/github.com/TheThingsNetwork/ttn force=yes
+  become: true
+  become_user: ttn
+
+- name: Checkout fixed ttn source from github
+  git: repo=https://github.com/rbricheno/ttn.git version=fix-otto dest=/home/ttn/go/src/github.com/rbricheno/ttn force=yes
+  become: true
+  become_user: ttn
+
+- name: Create go binary directory for 'ttn' user (for use in $PATH)
+  action: file path=/home/ttn/go/bin state=directory owner=ttn group=ttn mode=0775
+
+- name: Add $GOPATH to .profile for 'ttn' user
+  lineinfile:
+    path: /home/ttn/.profile
+    line: export GOPATH=$HOME/go
+
+- name: Add go binary path to 'ttn' user's $PATH
+  lineinfile:
+    path: /home/ttn/.profile
+    line: export PATH="$PATH:$HOME/go/bin:/snap/bin"
+
+- name: Copy fixed vendors file onto ttn source
+  command: cp /home/ttn/go/src/github.com/rbricheno/ttn/vendor/vendor.json /home/ttn/go/src/github.com/TheThingsNetwork/ttn/vendor/vendor.json
+  become: true
+  become_user: ttn
+
+- name: Make ttn dev-deps
+  shell: 'cd /home/ttn/go/src/github.com/TheThingsNetwork/ttn; . /home/ttn/.profile; make dev-deps'
+  become: true
+  become_user: ttn
+
+- name: Make ttn test
+  shell: 'cd /home/ttn/go/src/github.com/TheThingsNetwork/ttn; . /home/ttn/.profile; make test'
+  become: true
+  become_user: ttn
+
+- name: Make ttn dev
+  shell: 'cd /home/ttn/go/src/github.com/TheThingsNetwork/ttn; . /home/ttn/.profile; make dev'
+  become: true
+  become_user: ttn
+
+- name: Create /home/ttn/.ttnctl.yml by copying from dev example
+  command: cp /home/ttn/go/src/github.com/TheThingsNetwork/ttn/.env/ttnctl.yml.dev-example /home/ttn/.ttnctl.yml
+  become: true
+  become_user: ttn
+
+- name: Create ttnctl directory for discovery server cert
+  action: file path=/home/ttn/.ttnctl state=directory owner=ttn group=ttn mode=0775
+
+- name: Have ttnctl trust the CA cert of the local discovery server
+  command: cp /home/ttn/go/src/github.com/TheThingsNetwork/ttn/.env/discovery/server.cert /home/ttn/.ttnctl/ca.cert
+  become: true
+  become_user: ttn
+
+- name: Checkout gateway-connector-bridge source from github
+  git: repo=https://github.com/TheThingsNetwork/gateway-connector-bridge.git version=master dest=/home/ttn/go/src/github.com/TheThingsNetwork/gateway-connector-bridge force=yes
+  become: true
+  become_user: ttn
+
+- name: Make gateway-connector-bridge dev-deps
+  shell: 'cd /home/ttn/go/src/github.com/TheThingsNetwork/gateway-connector-bridge; . /home/ttn/.profile; make dev-deps'
+  become: true
+  become_user: ttn
+
+- name: Make gateway-connector-bridge test
+  shell: 'cd /home/ttn/go/src/github.com/TheThingsNetwork/gateway-connector-bridge; . /home/ttn/.profile; make test'
+  become: true
+  become_user: ttn
+
+- name: Make gateway-connector-bridge dev
+  shell: 'cd /home/ttn/go/src/github.com/TheThingsNetwork/gateway-connector-bridge; . /home/ttn/.profile; make dev'
+  become: true
+  become_user: ttn
+
+- name: Create directory for Discovery server configuration
+  action: file path=/home/ttn/discovery state=directory owner=ttn group=ttn mode=0700
+
+- name: Configure Discovery server
+  template: src=ttn.yml.j2 dest=/home/ttn/discovery/ttn.yml owner=ttn group=ttn mode=0644
+
+- stat: path=/home/ttn/discovery/server.pub
+  register: discovery_keypair
+
+- name: Generate the public/private keypair for the Discovery server
+  shell:  'cd /home/ttn; . /home/ttn/.profile; ttn discovery gen-keypair --config /home/ttn/discovery/ttn.yml'
+  become: true
+  become_user: ttn
+  when: discovery_keypair.stat.exists == False
+
+- stat: path=/home/ttn/discovery/server.cert
+  register: discovery_cert
+
+- name: Create a certificate for localhost
+  shell:  'cd /home/ttn; . /home/ttn/.profile; ttn discovery gen-cert localhost --config ./discovery/ttn.yml'
+  become: true
+  become_user: ttn
+  when: discovery_cert.stat.exists == False
